@@ -103,10 +103,13 @@ for batch in batch_iterator:
         print(f"step {batch}: train loss {avg_loss:.4f}")
 
 # ---------- show result ----------
-samples = sampler.sample(
-    model, image_size=config["image_size"], batch_size=25, channels=config["channel"]
+samples = sampler.ddim_sample(
+    model,
+    image_size=16,
+    batch_size=25,
+    n_steps=50,
+    eta=0.0,
 )
-
 # 创建一个 5x5 的子图网格
 fig, axes = plt.subplots(5, 5, figsize=(10, 10))
 
