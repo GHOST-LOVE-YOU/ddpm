@@ -27,12 +27,6 @@ def getData():
     return data
 
 
-def corrupt(x, amount):
-    noise = torch.rand_like(x)
-    amount = amount.view(-1, 1, 1, 1)  # Sort shape so broadcasting works
-    return x * (1 - amount) + noise * amount
-
-
 imgToTensor = Compose(
     [
         Lambda(lambda t: torch.from_numpy(t).float()),

@@ -1,12 +1,13 @@
 import torch
-from torch import nn
 from torch.utils.data import DataLoader
+from torch.nn import functional as F
 
 from tqdm.auto import tqdm
 import matplotlib.pyplot as plt
 
-from utils import getData, imgToTensor, tensorToImg, corrupt
-from model import BasicUNet
+from ddpm import DDPMSampler
+from utils import getData, imgToTensor, tensorToImg
+from model import Unet
 
 config = {
     "batch_size": 128,
@@ -43,12 +44,38 @@ train_dataloader = DataLoader(dataset, batch_size=config["batch_size"], shuffle=
 
 
 # ---------- create model ----------
-model = BasicUNet()
+model = Unet(
+    dim=config["image_size"],
+    channels=config["channel"],
+    dim_mults=(
+        1,
+        2,
+        4,
+    ),
+)
 print(f"{sum([p.numel() for p in model.parameters()]) / 1e6:.2f} M parameters")
 
 model.to(device)
-loss_fn = nn.L1Loss()
 opt = torch.optim.Adam(model.parameters(), lr=config["lr"])
+sampler = DDPMSampler()
+
+
+def p_losses(denoise_model, x_start, t, loss_type="l1"):
+    noise = torch.randn_like(x_start)
+    x_noisy = sampler.q_sample(x_start=x_start, t=t, noise=noise)
+    predicted_noise = denoise_model(x_noisy, t)
+
+    if loss_type == "l1":
+        loss = F.l1_loss(noise, predicted_noise)
+    elif loss_type == "l2":
+        loss = F.mse_loss(noise, predicted_noise)
+    elif loss_type == "huber":
+        loss = F.smooth_l1_loss(noise, predicted_noise)
+    else:
+        raise NotImplementedError()
+
+    return loss
+
 
 # ---------- train ----------
 losses = []
@@ -57,14 +84,9 @@ batch_iterator = tqdm(range(config["max_iters"]))
 for batch in batch_iterator:
     x = next(iter(train_dataloader))
     x = x.to(device)  # Data on the GPU
-    noise_amount = torch.rand(x.shape[0]).to(device)  # Pick random noise amounts
-    noisy_x = corrupt(x, noise_amount)  # Create our noisy x
-
-    # Get the model prediction
-    pred = model(noisy_x)
-
-    # Calculate the loss
-    loss = loss_fn(pred, x)
+    # change tiemsteps is not suggested
+    t = torch.randint(0, sampler.timesteps, (x.shape[0],), device=device).long()
+    loss = p_losses(model, x, t, loss_type="huber")
 
     # Backprop and update the params:
     opt.zero_grad()
@@ -81,35 +103,22 @@ for batch in batch_iterator:
         print(f"step {batch}: train loss {avg_loss:.4f}")
 
 # ---------- show result ----------
-# Fetch some data
-x = next(iter(train_dataloader))
-x = x[:8]  # Only using the first 8 for easy plotting
+samples = sampler.sample(
+    model, image_size=config["image_size"], batch_size=25, channels=config["channel"]
+)
 
-# Corrupt with a range of amounts
-amount = torch.linspace(0, 1, x.shape[0])  # Left to right -> more corruption
-noised_x = corrupt(x, amount)
+# 创建一个 5x5 的子图网格
+fig, axes = plt.subplots(5, 5, figsize=(10, 10))
 
-# Get the model predictions
-with torch.no_grad():
-    preds = model(noised_x.to(device)).detach().cpu()
+# 遍历每张图片并在对应的子图中显示
+for i in range(25):
+    img = tensorToImg(torch.tensor(samples[-1][i]))
+    axes[i // 5, i % 5].imshow(img)
+    axes[i // 5, i % 5].axis("off")
 
-# Plot
-fig, axs = plt.subplots(3, 8, figsize=(20, 7))
-for i in range(8):
-    axs[0, i].imshow(tensorToImg(x[i]))
-    axs[0, i].set_title(f"Input {i}")
-    axs[0, i].axis("off")
+# 调整子图之间的间距
+plt.subplots_adjust(wspace=0.1, hspace=0.1)
 
-    axs[1, i].imshow(tensorToImg(noised_x[i]))
-    axs[1, i].set_title(f"Corrupted {i}")
-    axs[1, i].axis("off")
-
-    axs[2, i].imshow(tensorToImg(preds[i]))
-    axs[2, i].set_title(f"Prediction {i}")
-    axs[2, i].axis("off")
-
-plt.tight_layout()
-# 保存图片
-plt.savefig("model_predictions.png", dpi=300, bbox_inches="tight")
-# 关闭图形以释放内存
-plt.close(fig)
+# 保存整个网格为一张图片
+plt.savefig("model_predictions.png", bbox_inches="tight", pad_inches=0.1)
+plt.close()  # 关闭图像以释放内存
